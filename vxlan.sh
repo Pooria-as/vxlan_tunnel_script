@@ -51,16 +51,13 @@ format_bytes() {
     local bytes=$1
     local decimals=${2:-2}
     
-    # Remove any non-numeric characters
     bytes=$(echo "$bytes" | sed 's/[^0-9]//g')
     
-    # If empty or zero
     if [[ -z "$bytes" || "$bytes" == "0" ]]; then
         echo "0 B"
         return
     fi
     
-    # Convert to number
     bytes=$(echo "$bytes" | sed 's/^0*//')
     if [[ -z "$bytes" ]]; then
         echo "0 B"
@@ -92,6 +89,22 @@ detect_network() {
 }
 
 # ============================================
+# PROMPT WITH DEFAULT VALUE
+# ============================================
+prompt_default() {
+    local prompt_msg=$1
+    local default_val=$2
+    local input
+    
+    read -p "$prompt_msg [$default_val]: " input
+    if [ -z "$input" ]; then
+        echo "$default_val"
+    else
+        echo "$input"
+    fi
+}
+
+# ============================================
 # CHECK VXLAN STATUS
 # ============================================
 check_vxlan_status() {
@@ -107,16 +120,12 @@ check_vxlan_status() {
     local peer_ip=""
     
     if ip link show "$dev" &>/dev/null; then
-        # Check if interface is UP using multiple methods
         local link_state=$(ip link show "$dev" 2>/dev/null)
         
-        # Method 1: Check for "state UP"
         if echo "$link_state" | grep -q "state UP"; then
             status="${GREEN}UP${NC}"
-        # Method 2: Check for "UP" flag
         elif echo "$link_state" | grep -q "UP" && echo "$link_state" | grep -q "LOWER_UP"; then
             status="${GREEN}UP${NC}"
-        # Method 3: Check /sys
         elif [[ -f "/sys/class/net/$dev/operstate" ]]; then
             local operstate=$(cat "/sys/class/net/$dev/operstate" 2>/dev/null)
             if [[ "$operstate" == "up" ]]; then
@@ -128,17 +137,14 @@ check_vxlan_status() {
             status="${RED}DOWN${NC}"
         fi
         
-        # Get port from VXLAN configuration
         if ip -d link show "$dev" 2>/dev/null | grep -q "dstport"; then
             port=$(ip -d link show "$dev" | grep -oP 'dstport \K\d+' | head -n1)
         fi
         
-        # Get VXLAN ID
         if ip -d link show "$dev" 2>/dev/null | grep -q "id"; then
             vxlan_id=$(ip -d link show "$dev" | grep -oP 'id \K\d+' | head -n1)
         fi
         
-        # Get TX/RX stats from ip command
         local stats=$(ip -s link show "$dev" 2>/dev/null)
         if echo "$stats" | grep -A1 "RX:" | tail -n1 | grep -q "[0-9]"; then
             bytes_rx=$(echo "$stats" | grep -A1 "RX:" | tail -n1 | awk '{print $1}' 2>/dev/null | sed 's/,//g')
@@ -147,7 +153,6 @@ check_vxlan_status() {
             tx=$(echo "$stats" | grep -A1 "TX:" | tail -n1 | awk '{print $2}' 2>/dev/null | sed 's/,//g')
         fi
         
-        # If stats are empty, try /sys
         if [[ -z "${bytes_rx//[0-9]/}" || "$bytes_rx" == "0" ]] && [[ -f "/sys/class/net/$dev/statistics/rx_bytes" ]]; then
             bytes_rx=$(cat "/sys/class/net/$dev/statistics/rx_bytes" 2>/dev/null | sed 's/[^0-9]//g')
             bytes_tx=$(cat "/sys/class/net/$dev/statistics/tx_bytes" 2>/dev/null | sed 's/[^0-9]//g')
@@ -155,20 +160,17 @@ check_vxlan_status() {
             tx=$(cat "/sys/class/net/$dev/statistics/tx_packets" 2>/dev/null | sed 's/[^0-9]//g')
         fi
         
-        # Get IP address
         ip_addr=$(ip -4 addr show "$dev" 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}/\d+' | head -n1)
         if [[ -z "$ip_addr" ]]; then
             ip_addr=$(ip addr show "$dev" 2>/dev/null | grep -E "inet " | awk '{print $2}' | head -n1)
         fi
         
-        # Get peer IP
         peer_ip=$(ip -d link show "$dev" 2>/dev/null | grep -oP 'remote \K\d+(\.\d+){3}' | head -n1)
         
     else
         status="${RED}NOT FOUND${NC}"
     fi
     
-    # Set global variables
     VXLAN_STATUS="${status}"
     VXLAN_PORT="${port:-N/A}"
     VXLAN_TX="${tx:-0}"
@@ -191,30 +193,25 @@ add_iptables_rules() {
     
     echo -e "\n${YELLOW}Adding iptables rules...${NC}"
     
-    # Enable IP forwarding
     sudo sysctl -w net.ipv4.ip_forward=1 > /dev/null 2>&1
     sudo sysctl -p > /dev/null 2>&1
     
-    # Check if tun0 exists (OpenVPN)
     if ip link show tun0 &>/dev/null; then
         echo "  Adding rules for tun0..."
         sudo iptables -A FORWARD -i tun0 -o "$vxlan_dev" -j ACCEPT 2>/dev/null || true
         sudo iptables -A FORWARD -i "$vxlan_dev" -o tun0 -j ACCEPT 2>/dev/null || true
     fi
     
-    # Check if wg0 exists (WireGuard)
     if ip link show wg0 &>/dev/null; then
         echo "  Adding rules for wg0..."
         sudo iptables -A FORWARD -i wg0 -o "$vxlan_dev" -j ACCEPT 2>/dev/null || true
         sudo iptables -A FORWARD -i "$vxlan_dev" -o wg0 -j ACCEPT 2>/dev/null || true
     fi
     
-    # Add rules for main interface
     echo "  Adding rules for $main_iface..."
     sudo iptables -A FORWARD -i "$main_iface" -o "$vxlan_dev" -j ACCEPT 2>/dev/null || true
     sudo iptables -A FORWARD -i "$vxlan_dev" -o "$main_iface" -j ACCEPT 2>/dev/null || true
     
-    # Add NAT masquerade for VXLAN
     echo "  Adding NAT masquerade..."
     sudo iptables -t nat -A POSTROUTING -o "$vxlan_dev" -j MASQUERADE 2>/dev/null || true
     
@@ -222,7 +219,7 @@ add_iptables_rules() {
 }
 
 # ============================================
-# QUICK STATUS - WITH HUMAN READABLE TRAFFIC
+# QUICK STATUS
 # ============================================
 quick_status() {
     clear
@@ -232,7 +229,6 @@ quick_status() {
     echo -e "${BOLD}${WHITE}                  📊 QUICK VXLAN STATUS${NC}"
     echo -e "${CYAN}═══════════════════════════════════════════════════════════════════════${NC}\n"
     
-    # Get all VXLAN interfaces
     local vxlan_ifaces=$(ip -d link show type vxlan 2>/dev/null | grep -oP '^[0-9]+: \K[^:]+')
     
     if [[ -z "$vxlan_ifaces" ]]; then
@@ -266,7 +262,7 @@ quick_status() {
 }
 
 # ============================================
-# REAL-TIME MONITOR - WITH HUMAN READABLE TRAFFIC
+# REAL-TIME MONITOR
 # ============================================
 monitor_vxlan() {
     clear
@@ -288,7 +284,6 @@ monitor_vxlan() {
     
     local monitor_iface=$(echo "$vxlan_ifaces" | head -n1)
     
-    # Store previous stats for rate calculation
     local prev_rx=0
     local prev_tx=0
     local prev_time=$(date +%s)
@@ -301,7 +296,6 @@ monitor_vxlan() {
         
         check_vxlan_status "$monitor_iface"
         
-        # Calculate rate
         local current_time=$(date +%s)
         local time_diff=$((current_time - prev_time))
         local rx_rate=0
@@ -338,7 +332,6 @@ monitor_vxlan() {
         echo -e "${YELLOW}Press Ctrl+C to exit${NC}"
         show_footer
         
-        # Update previous values
         prev_rx=${VXLAN_BYTES_RX:-0}
         prev_tx=${VXLAN_BYTES_TX:-0}
         prev_time=$current_time
@@ -348,7 +341,7 @@ monitor_vxlan() {
 }
 
 # ============================================
-# TEST TUNNEL - WITH SPEED AND TIME
+# TEST TUNNEL
 # ============================================
 test_tunnel() {
     clear
@@ -369,7 +362,6 @@ test_tunnel() {
     
     local test_iface=$(echo "$vxlan_ifaces" | head -n1)
     
-    # Check if interface exists and is UP
     local is_up=false
     if ip link show "$test_iface" | grep -q "state UP"; then
         is_up=true
@@ -406,19 +398,15 @@ test_tunnel() {
     local temp_file="/tmp/youtube_test.html"
     local start_time=$(date +%s%N)
     
-    # Download with wget and capture output
     if wget -q --timeout=15 --tries=2 -O "$temp_file" "https://www.youtube.com" 2>/dev/null; then
         local end_time=$(date +%s%N)
         
-        # Calculate time taken
-        local time_taken=$((($end_time - $start_time) / 1000000)) # milliseconds
+        local time_taken=$((($end_time - $start_time) / 1000000))
         local time_sec=$(echo "scale=2; $time_taken / 1000" | bc 2>/dev/null || echo "0")
         
-        # Get file size
         local file_size=$(stat -c%s "$temp_file" 2>/dev/null || echo "0")
         local file_size_human=$(format_bytes "$file_size")
         
-        # Calculate speed in bytes per second
         local speed=0
         if [[ $time_taken -gt 0 ]]; then
             speed=$(echo "scale=2; ($file_size * 1000) / $time_taken" | bc 2>/dev/null || echo "0")
@@ -430,7 +418,6 @@ test_tunnel() {
         echo -e "  ${WHITE}File size:${NC}       $file_size_human"
         echo -e "  ${WHITE}Time taken:${NC}      ${time_sec}s (${time_taken}ms)"
         
-        # Show speed in human readable
         local speed_float=$(echo "$speed" | cut -d'.' -f1)
         if [[ -z "$speed_float" ]]; then
             speed_float=0
@@ -448,7 +435,6 @@ test_tunnel() {
         
         echo -e "${CYAN}───────────────────────────────────────────────────────────────────────${NC}"
         
-        # Show preview
         echo -e "\n${WHITE}📄 Content preview (first 3 lines):${NC}"
         echo -e "${CYAN}───────────────────────────────────────────────────────────────────────${NC}"
         head -3 "$temp_file" 2>/dev/null | head -c 200
@@ -533,7 +519,7 @@ stop_vxlan() {
 }
 
 # ============================================
-# YOUR EXACT CLIENT SCRIPT + IPTABLES
+# START CLIENT
 # ============================================
 run_client() {
     clear
@@ -544,19 +530,6 @@ run_client() {
     echo -e "${CYAN}═══════════════════════════════════════════════════════════════════════${NC}\n"
     
     set -e
-    
-    prompt_default() {
-        local prompt_msg=$1
-        local default_val=$2
-        local input
-        
-        read -p "$prompt_msg [$default_val]: " input
-        if [ -z "$input" ]; then
-            echo "$default_val"
-        else
-            echo "$input"
-        fi
-    }
     
     main_iface=$(ip route | grep default | awk '{print $5}' | head -n1)
     main_ip=$(ip -4 addr show dev "$main_iface" | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -n1)
@@ -633,13 +606,14 @@ run_client() {
     check_vxlan_status "$VXLAN_DEV"
     echo -e "${GREEN}✓ Status: $VXLAN_STATUS${NC}"
     echo -e "${GREEN}✓ Port: ${VXLAN_PORT:-$VXLAN_DSTPORT}${NC}"
+    echo -e "${GREEN}✓ MTU: $VXLAN_MTU${NC}"
     
     show_footer
     read -p "Press Enter to continue..."
 }
 
 # ============================================
-# YOUR EXACT SERVER SCRIPT + IPTABLES
+# START SERVER - WITH DYNAMIC PORT & MTU
 # ============================================
 run_server() {
     clear
@@ -726,17 +700,22 @@ run_server() {
     
     REMOTE_IP=$(prompt_remote_ip)
     
+    # ============================================
+    # DYNAMIC PARAMETERS - NOW PROMPT FOR THESE
+    # ============================================
     LOCAL_IP="$DEFAULT_IP"
     GATEWAY_IP="$DEFAULT_GW"
     INTERFACE="$DEFAULT_IFACE"
-    VXLAN_ID=1200
-    VXLAN_IP="2.2.2.10/30"
-    VXLAN_MTU=1420
-    VXLAN_DSTPORT=5890
+    
+    VXLAN_ID=$(prompt_default "Enter VXLAN ID" "1200")
+    VXLAN_IP=$(prompt_default "Enter VXLAN IP address with mask" "2.2.2.10/30")
+    VXLAN_MTU=$(prompt_default "Enter VXLAN MTU" "1420")
+    VXLAN_DSTPORT=$(prompt_default "Enter VXLAN destination port" "5890")
+    TABLE_NAME=$(prompt_default "Enter routing table name" "DIRECT")
+    VXLAN_DEV=$(prompt_default "Enter VXLAN device name" "vxlan${VXLAN_ID}")
+    
+    NAT_SUBNET=$(echo "$VXLAN_IP" | cut -d. -f1-3).0/30
     NAT_INTERFACE="$INTERFACE"
-    NAT_SUBNET="2.2.2.8/30"
-    TABLE_NAME="DIRECT"
-    VXLAN_DEV="vxlan${VXLAN_ID}"
     
     echo
     echo "Using parameters:"
@@ -748,8 +727,10 @@ run_server() {
     echo "  VXLAN IP: $VXLAN_IP"
     echo "  VXLAN MTU: $VXLAN_MTU"
     echo "  VXLAN DSTPORT: $VXLAN_DSTPORT"
+    echo "  VXLAN Device: $VXLAN_DEV"
     echo "  NAT Interface: $NAT_INTERFACE"
     echo "  NAT Subnet: $NAT_SUBNET"
+    echo "  Routing Table: $TABLE_NAME"
     echo
     
     add_routing_table_entry
@@ -812,6 +793,7 @@ run_server() {
     check_vxlan_status "$VXLAN_DEV"
     echo -e "\n${GREEN}✓ Status: $VXLAN_STATUS${NC}"
     echo -e "${GREEN}✓ Port: ${VXLAN_PORT:-$VXLAN_DSTPORT}${NC}"
+    echo -e "${GREEN}✓ MTU: $VXLAN_MTU${NC}"
     
     show_footer
     read -p "Press Enter to continue..."
@@ -876,7 +858,7 @@ main_menu() {
 # SCRIPT START
 # ============================================
 
-if [[ $EUDI -ne 0 ]]; then
+if [[ $EUID -ne 0 ]]; then
     echo -e "${RED}This script must be run as root. Use sudo.${NC}" >&2
     exit 1
 fi
